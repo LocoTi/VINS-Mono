@@ -16,6 +16,7 @@ void Estimator::setParameter()
     f_manager.setRic(ric);
     ProjectionFactor::sqrt_info = FOCAL_LENGTH / 1.5 * Matrix2d::Identity();
     ProjectionTdFactor::sqrt_info = FOCAL_LENGTH / 1.5 * Matrix2d::Identity();
+    // 配置文件中td的解释：initial value of time offset. unit: s. readed image clock + td = real image clock (IMU clock)
     td = TD;
 }
 
@@ -81,8 +82,14 @@ void Estimator::clearState()
     drift_correct_t = Vector3d::Zero();
 }
 
+/**
+ * 处理IMU数据
+ * linear_acceleration 线加速度
+ * angular_velocity    角速度
+ * */
 void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity)
 {
+    // 1.判断是不是第一个imu消息，如果是第一个imu消息，则将当前传入的线加速度和角速度作为初始的加速度和角速度
     if (!first_imu)
     {
         first_imu = true;
@@ -90,12 +97,16 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
         gyr_0 = angular_velocity;
     }
 
+    // 2.创建预积分对象
     if (!pre_integrations[frame_count])
     {
+        // Bas[frame_count]和Bgs[frame_count]为对应于id为frame_count这一帧图像的线加速度偏置和角速度偏置值
         pre_integrations[frame_count] = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
     }
+    // frame_count==0表示此时滑动窗口中还没有图像帧数据，所以先不进行预积分
     if (frame_count != 0)
     {
+        // 3.进行预计分
         pre_integrations[frame_count]->push_back(dt, linear_acceleration, angular_velocity);
         //if(solver_flag != NON_LINEAR)
             tmp_pre_integration->push_back(dt, linear_acceleration, angular_velocity);
@@ -105,14 +116,27 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
         angular_velocity_buf[frame_count].push_back(angular_velocity);
 
         int j = frame_count;         
+        /**
+         * 4.更新Rs、Ps、Vs三个向量数组。
+         * Rs为旋转向量数组，Ps为位置向量数组，Vs为速度向量数组，数组的大小为WINDOW_SIZE + 1
+         * 那么，这三个向量数组中每个元素都对应的是每一个window
+        */
+        // 计算上一时刻的加速度，前边乘一个旋转矩阵Rs[j]的作用是进行坐标系转换
         Vector3d un_acc_0 = Rs[j] * (acc_0 - Bas[j]) - g;
+        // 根据上一时刻陀螺仪的角速度和当前时刻的角速度求出平均角速度
         Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs[j];
+        // 计算当前时刻陀螺仪的姿态（旋转）矩阵。这里其实是在上一时刻的旋转矩阵基础上和当前时刻的旋转增量相乘得到的
         Rs[j] *= Utility::deltaQ(un_gyr * dt).toRotationMatrix();
+        // 求当前时刻的加速度
         Vector3d un_acc_1 = Rs[j] * (linear_acceleration - Bas[j]) - g;
+        // 求上一时刻和当前时刻的平均加速度
         Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
+        // 位移（位置）更新，位置是在之前的基础上加上当前的位移量，使用的是位移公式：s = v*t + 1/2*a*t^2
         Ps[j] += dt * Vs[j] + 0.5 * dt * dt * un_acc;
+        // 速度更新，使用的是速度公式：v = a * t a是加速度，t是时间
         Vs[j] += dt * un_acc;
     }
+    // 更新acc_0和gyr_0的值，本次的线加速度和角速度作为下一个IMU消息的前一个状态值
     acc_0 = linear_acceleration;
     gyr_0 = angular_velocity;
 }

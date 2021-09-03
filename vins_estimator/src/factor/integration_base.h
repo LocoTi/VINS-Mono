@@ -51,6 +51,11 @@ class IntegrationBase
             propagate(dt_buf[i], acc_buf[i], gyr_buf[i]);
     }
 
+    /**
+     * 该函数是以中值点的方式进行预积分求解PVQ的，需要注意的是这里使用的是离散形式的预积分公式
+     * 参数中_0代表上次测量值，_1代表当前测量值，delta_p，delta_q，delta_v代表相对预积分初始参考系的位移，旋转四元数，以及速度
+     * 从k帧预积分到k+1帧，则参考系是k帧的imu坐标系
+    */
     void midPointIntegration(double _dt, 
                             const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
                             const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
@@ -60,23 +65,41 @@ class IntegrationBase
                             Eigen::Vector3d &result_linearized_ba, Eigen::Vector3d &result_linearized_bg, bool update_jacobian)
     {
         //ROS_INFO("midpoint integration");
+        // delta_q为相对预计分参考系的旋转四元数，线加速度的测量值减去偏差然后和旋转四元数相乘表示将线加速度从世界坐标系下转到了body(IMU)坐标系下
         Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);
+        // 计算平均角速度
         Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
+        // 对平均角速度和时间的乘积构成的旋转值组成的四元数左乘旋转四元数，获得当前时刻body中的旋转向量（四元数表示）
         result_delta_q = delta_q * Quaterniond(1, un_gyr(0) * _dt / 2, un_gyr(1) * _dt / 2, un_gyr(2) * _dt / 2);
+        // 用计算出来的旋转向量左乘当前的加速度，表示将线加速度从世界坐标系下转到了body坐标系下
         Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);
+        // 计算两个时刻的平均加速度
         Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
+        // 当前的位移：当前位移=前一次的位移+(速度×时间)+1/2×加速度的×时间的平方
+        // 匀加速度运动的位移公式：s_1 = s_0 + v_0 * t + 1/2 * a * t^2
         result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;
+        // 速度计算公式：v_1 = v_0 + a*t
         result_delta_v = delta_v + un_acc * _dt;
+        // 预积分的过程中Bias并未发生改变，所以还保存在result当中
         result_linearized_ba = linearized_ba;
         result_linearized_bg = linearized_bg;         
 
+        // 是否更新IMU预计分测量关于IMU Bias的雅克比矩阵
         if(update_jacobian)
         {
+            // 计算平均角速度
             Vector3d w_x = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
+            // 计算_acc_0这个观测线加速度对应的实际加速度
             Vector3d a_0_x = _acc_0 - linearized_ba;
+            // 计算_acc_1这个观测线加速度对应的实际加速度
             Vector3d a_1_x = _acc_1 - linearized_ba;
             Matrix3d R_w_x, R_a_0_x, R_a_1_x;
 
+            /**
+             *         | 0      -W_z     W_y |
+             * [W]_x = | W_z     0      -W_x |
+             *         | -W_y   W_x       0  |
+            */
             R_w_x<<0, -w_x(2), w_x(1),
                 w_x(2), 0, -w_x(0),
                 -w_x(1), w_x(0), 0;
@@ -87,6 +110,16 @@ class IntegrationBase
                 a_1_x(2), 0, -a_1_x(0),
                 -a_1_x(1), a_1_x(0), 0;
 
+            //F是一个15行15列的数据类型为double，数据全部为0的矩阵，Matrix创建的矩阵默认按列存储
+            /**
+             * matrix.block(i,j, p, q) : 表示返回从矩阵(i, j)开始，每行取p个元素，每列取q个元素所组成的临时新矩阵对象，原矩阵的元素不变；
+             * matrix.block<p,q>(i, j) :<p, q>可理解为一个p行q列的子矩阵，该定义表示从原矩阵中第(i, j)开始，获取一个p行q列的子矩阵，
+             * 返回该子矩阵组成的临时矩阵对象，原矩阵的元素不变；
+            */
+            //从F矩阵的(0,0)位置的元素开始，将前3行3列的元素赋值为单位矩阵
+            /**
+             * 下面F和V矩阵为什么这样构造，是需要进行相关推导的。这里的F、V矩阵的构造理解可以参考论文附录中给出的公式
+            */
             MatrixXd F = MatrixXd::Zero(15, 15);
             F.block<3, 3>(0, 0) = Matrix3d::Identity();
             F.block<3, 3>(0, 3) = -0.25 * delta_q.toRotationMatrix() * R_a_0_x * _dt * _dt + 
@@ -121,12 +154,27 @@ class IntegrationBase
 
             //step_jacobian = F;
             //step_V = V;
+            /**
+             * 求矩阵的转置、共轭矩阵、伴随矩阵：可以通过成员函数transpose()、conjugate()、adjoint()来完成。注意：这些函数返回操作后的结果，
+             * 而不会对原矩阵的元素进行直接操作，如果要让原矩阵进行转换，则需要使用响应的InPlace函数，如transpoceInPlace()等
+            */
+            //雅克比jacobian的迭代公式：J_(k+1)​=F*J_k​，J_0​=I
             jacobian = F * jacobian;
+            /**
+             * covariance为协方差，协方差的迭代公式：P_(k+1) ​= F*P_k*​F^T + V*Q*V^T，P_0​ = 0
+             * P_k就是协方差，Q为noise，其初值为18*18的单位矩阵
+            */
             covariance = F * covariance * F.transpose() + V * noise * V.transpose();
         }
 
     }
 
+    /**
+     * 预计分计算
+     * _dt    时间间隔
+     * _acc_1 线加速度
+     * _gyr_1 角速度
+    */
     void propagate(double _dt, const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1)
     {
         dt = _dt;
@@ -138,6 +186,7 @@ class IntegrationBase
         Vector3d result_linearized_ba;
         Vector3d result_linearized_bg;
 
+        // 中值积分方法
         midPointIntegration(_dt, acc_0, gyr_0, _acc_1, _gyr_1, delta_p, delta_q, delta_v,
                             linearized_ba, linearized_bg,
                             result_delta_p, result_delta_q, result_delta_v,
@@ -145,13 +194,17 @@ class IntegrationBase
 
         //checkJacobian(_dt, acc_0, gyr_0, acc_1, gyr_1, delta_p, delta_q, delta_v,
         //                    linearized_ba, linearized_bg);
+        // 更新PQV
         delta_p = result_delta_p;
         delta_q = result_delta_q;
         delta_v = result_delta_v;
+        // 更新偏置
         linearized_ba = result_linearized_ba;
         linearized_bg = result_linearized_bg;
         delta_q.normalize();
+        // 时间进行累加
         sum_dt += dt;
+        // 预积分完后，更新当前的线加速度和角速度为上一时刻的线加速度和角速度
         acc_0 = acc_1;
         gyr_0 = gyr_1;  
      

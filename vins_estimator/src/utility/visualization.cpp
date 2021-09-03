@@ -42,6 +42,7 @@ void registerPub(ros::NodeHandle &n)
     keyframebasevisual.setLineWidth(0.01);
 }
 
+// 发布predict中计算出来的PVQ信息
 void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, const Eigen::Vector3d &V, const std_msgs::Header &header)
 {
     Eigen::Quaterniond quadrotor_Q = Q ;

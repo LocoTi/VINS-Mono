@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8.3)
 project(camera_model)
 
 set(CMAKE_BUILD_TYPE "Release")
-set(CMAKE_CXX_FLAGS "-std=c++11")
+set(CMAKE_CXX_FLAGS "-std=c++11 -lboost_system -lboost_filesystem")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fPIC")
 
 find_package(catkin REQUIRED COMPONENTS
@@ -63,5 +63,6 @@ add_library(camera_model
     src/gpl/gpl.cc
     src/gpl/EigenQuaternionParameterization.cc)
 
+target_link_libraries(Calibration boost_filesystem boost_system)
 target_link_libraries(Calibration ${Boost_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES})
 target_link_libraries(camera_model ${Boost_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES})

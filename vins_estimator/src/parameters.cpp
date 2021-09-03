@@ -54,7 +54,7 @@ void readParameters(ros::NodeHandle &n)
     SOLVER_TIME = fsSettings["max_solver_time"];
     NUM_ITERATIONS = fsSettings["max_num_iterations"];
     MIN_PARALLAX = fsSettings["keyframe_parallax"];
-    MIN_PARALLAX = MIN_PARALLAX / FOCAL_LENGTH;
+    MIN_PARALLAX = MIN_PARALLAX / FOCAL_LENGTH; // 最小视差=最小视差/焦距=10.0/460.0
 
     std::string OUTPUT_PATH;
     fsSettings["output_path"] >> OUTPUT_PATH;
@@ -62,6 +62,7 @@ void readParameters(ros::NodeHandle &n)
     std::cout << "result path " << VINS_RESULT_PATH << std::endl;
 
     // create folder if not exists
+    // 创建输出目录：output_path: "/home/shaozu/output/"
     FileSystemHelper::createDirectoryIfNotExists(OUTPUT_PATH.c_str());
 
     std::ofstream fout(VINS_RESULT_PATH, std::ios::out);
@@ -76,6 +77,7 @@ void readParameters(ros::NodeHandle &n)
     COL = fsSettings["image_width"];
     ROS_INFO("ROW: %f COL: %f ", ROW, COL);
 
+    // IMU和camera之间的外参
     ESTIMATE_EXTRINSIC = fsSettings["estimate_extrinsic"];
     if (ESTIMATE_EXTRINSIC == 2)
     {
@@ -115,6 +117,7 @@ void readParameters(ros::NodeHandle &n)
     BIAS_ACC_THRESHOLD = 0.1;
     BIAS_GYR_THRESHOLD = 0.1;
 
+    // 获取TD，图像和IMU数据在时间上的偏移量，这里配置文件中为0.0
     TD = fsSettings["td"];
     ESTIMATE_TD = fsSettings["estimate_td"];
     if (ESTIMATE_TD)

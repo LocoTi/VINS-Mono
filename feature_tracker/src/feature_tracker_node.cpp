@@ -27,6 +27,7 @@ bool init_pub = 0;
 
 void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
+    // 第一帧图片的标记
     if(first_image_flag)
     {
         first_image_flag = false;
@@ -48,6 +49,9 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     }
     last_image_time = img_msg->header.stamp.toSec();
     // frequency control
+    // 频率控制
+    // 修改PUB_THIS_FRAME的值，决定是否要把检测到的特征点打包成/feature_tracker/featuretopic发出去（FREQ决定每间隔多久）
+    // 这里计算的是每秒发送的image个数，保证每秒钟处理的image不多于FREQ
     if (round(1.0 * pub_count / (img_msg->header.stamp.toSec() - first_image_time)) <= FREQ)
     {
         PUB_THIS_FRAME = true;
@@ -72,6 +76,8 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         img.step = img_msg->step;
         img.data = img_msg->data;
         img.encoding = "mono8";
+        // cv_bridge::toCvCopy从ROS的img消息中获得一个图像数据的拷贝。也就是从ROS的sensor_msg中获取到图像数据信息
+        // cv_bridge在ROS的message和opencv的image之间架起了一座桥梁，将二者进行转换
         ptr = cv_bridge::toCvCopy(img, sensor_msgs::image_encodings::MONO8);
     }
     else
@@ -83,6 +89,8 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     {
         ROS_DEBUG("processing camera %d", i);
         if (i != 1 || !STEREO_TRACK)
+            // readImage
+            // 读取图像信息，进行一系列处理，提取特征点
             trackerData[i].readImage(ptr->image.rowRange(ROW * i, ROW * (i + 1)), img_msg->header.stamp.toSec());
         else
         {
@@ -105,6 +113,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         bool completed = false;
         for (int j = 0; j < NUM_OF_CAM; j++)
             if (j != 1 || !STEREO_TRACK)
+                // 更新feature的id
                 completed |= trackerData[j].updateID(i);
         if (!completed)
             break;
@@ -114,7 +123,9 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
    {
         pub_count++;
         sensor_msgs::PointCloudPtr feature_points(new sensor_msgs::PointCloud);
+        // 特征点的id
         sensor_msgs::ChannelFloat32 id_of_point;
+        // 图像的u、v坐标
         sensor_msgs::ChannelFloat32 u_of_point;
         sensor_msgs::ChannelFloat32 v_of_point;
         sensor_msgs::ChannelFloat32 velocity_x_of_point;
@@ -143,9 +154,12 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 
                     feature_points->points.push_back(p);
                     id_of_point.values.push_back(p_id * NUM_OF_CAM + i);
+                    // 像素点的x,y坐标
                     u_of_point.values.push_back(cur_pts[j].x);
                     v_of_point.values.push_back(cur_pts[j].y);
+                    // x轴方向上的速度
                     velocity_x_of_point.values.push_back(pts_velocity[j].x);
+                    // y轴方向上的速度
                     velocity_y_of_point.values.push_back(pts_velocity[j].y);
                 }
             }
@@ -162,6 +176,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
             init_pub = 1;
         }
         else
+            // 发布检测到的特征点topic：feature，该topic会被vins_estimator中接收处理
             pub_img.publish(feature_points);
 
         if (SHOW_TRACK)
@@ -178,6 +193,14 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
                 for (unsigned int j = 0; j < trackerData[i].cur_pts.size(); j++)
                 {
                     double len = std::min(1.0, 1.0 * trackerData[i].track_cnt[j] / WINDOW_SIZE);
+                    /**
+                     * cv::circle是opencv中用于画圆的函数
+                     * 第一个参数：tmp_img为图像
+                     * 第二个参数：trackerData[i].cur_pts[j]决定圆的中心点坐标
+                     * 第三个参数：2为圆的半径
+                     * 第四个参数：为圆的颜色，这里用len值来决定点的颜色
+                     * 第五个参数：为设置圆线条的粗细，其值越大则线条越粗，为负数则是填充效果
+                     */
                     cv::circle(tmp_img, trackerData[i].cur_pts[j], 2, cv::Scalar(255 * (1 - len), 0, 255 * len), 2);
                     //draw speed line
                     /*
@@ -197,6 +220,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
             }
             //cv::imshow("vis", stereo_img);
             //cv::waitKey(5);
+            // 这里发布的topic为feature_img，会在Rviz中的tracked_image里进行图像显示，图像中的红色圆点就是标记出来的特征点
             pub_match.publish(ptr->toImageMsg());
         }
     }
@@ -227,7 +251,7 @@ int main(int argc, char **argv)
                 ROS_INFO("load mask success");
         }
     }
-
+    // 订阅image topic，调用img_callback
     ros::Subscriber sub_img = n.subscribe(IMAGE_TOPIC, 100, img_callback);
 
     pub_img = n.advertise<sensor_msgs::PointCloud>("feature", 1000);
