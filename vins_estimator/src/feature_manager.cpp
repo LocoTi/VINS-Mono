@@ -41,19 +41,33 @@ int FeatureManager::getFeatureCount()
     return cnt;
 }
 
-
+// VINS中为了控制优化计算量，只对当前帧之前的滑动窗口大小的关键帧数（系统中设置的值为10）进行优化。
+// 那么问题来了？当新的关键帧加入的时候，滑动窗口中的关键帧个数就会增加，
+// 为了保持窗口大小不变，就需要删除旧的帧后再添加新帧，这就是所谓的边缘化marginalization。
+// 那么，到底要删除哪个帧？是删除最旧的帧还是删除倒数第二帧，这就是addFeatureCheckParallax中需要判断的。
+/**
+ * 添加特征并检测视差
+ * 参考VINS 估计器之检查视差进行理解： https://www.cnblogs.com/easonslam/p/8872706.html
+*/
 bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, double td)
 {
     ROS_DEBUG("input feature: %d", (int)image.size());
     ROS_DEBUG("num of feature: %d", getFeatureCount());
+    // 用于记录所有特征点的视差总和
     double parallax_sum = 0;
+    // 记录满足某些条件的特征点个数
     int parallax_num = 0;
+    // 被跟踪点的个数
     last_track_num = 0;
+    // 遍历图像image中所有的特征点，和已经记录了特征点的容器feature中进行比较
     for (auto &id_pts : image)
     {
+        // 特征点管理器，存储特征点格式：首先按照特征点ID，一个一个存储，每个ID会包含其在不同帧上的位置
+        // 这里id_pts.second[0].second获取的信息为：xyz_uv_velocity << x, y, z, p_u, p_v, velocity_x, velocity_y
         FeaturePerFrame f_per_fra(id_pts.second[0].second, td);
 
         int feature_id = id_pts.first;
+        // 在feature中查找该feature_id的feature是否存在
         auto it = find_if(feature.begin(), feature.end(), [feature_id](const FeaturePerId &it)
                           {
             return it.feature_id == feature_id;
@@ -61,37 +75,53 @@ bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vec
 
         if (it == feature.end())
         {
+            // 没有找到该feature的id，则把特征点放入feature的list容器中
             feature.push_back(FeaturePerId(feature_id, frame_count));
             feature.back().feature_per_frame.push_back(f_per_fra);
         }
         else if (it->feature_id == feature_id)
         {
+            /**
+             * 如果找到了相同ID特征点，就在其FeaturePerFrame内增加此特征点在此帧的位置以及其他信息，
+             * it的feature_per_frame容器中存放的是该feature能够被哪些帧看到，存放的是在这些帧中该特征点的信息
+             * 所以，feature_per_frame.size的大小就表示有多少个帧可以看到该特征点
+             * */
             it->feature_per_frame.push_back(f_per_fra);
             last_track_num++;
         }
     }
 
+    // frame_count<2,也就是说加入到窗口中的帧个数取值为0或者1的时候
+    // last_track_num说明能够跟踪到的特征点数量少于20个
     if (frame_count < 2 || last_track_num < 20)
         return true;
 
+    // 遍历每一个feature
     for (auto &it_per_id : feature)
     {
+        // 计算能被当前帧和其前两帧共同看到的特征点视差
         if (it_per_id.start_frame <= frame_count - 2 &&
             it_per_id.start_frame + int(it_per_id.feature_per_frame.size()) - 1 >= frame_count - 1)
         {
+            // 计算特征点it_per_id在倒数第二帧和倒数第三帧之间的视差，并求所有视差的累加和
             parallax_sum += compensatedParallax2(it_per_id, frame_count);
             parallax_num++;
         }
     }
 
+    // 返回true后，在processImage中会将marginalization_flag设置为MARGIN_OLD
     if (parallax_num == 0)
     {
         return true;
     }
     else
     {
+        // 视差总和除以参与计算视差的特征点个数，表示每个特征点的平均视差值
         ROS_DEBUG("parallax_sum: %lf, parallax_num: %d", parallax_sum, parallax_num);
         ROS_DEBUG("current parallax: %lf", parallax_sum / parallax_num * FOCAL_LENGTH);
+        // 如果平均视差>=MIN_PARALLAX（值为10.0/460.0），则返回true;
+        // 如果平均视差<MIN_PARALLAX（值为10.0/460.0），则返回false。在processImage中会将marginalization_flag设置为MARGIN_SECOND_NEW
+        // 暂时理解是：当平均视差大于等于最小视差的情况下，删除滑动窗口中最旧的帧；当平均视差小于最小视差的情况下，删除滑动窗口中第倒数第二帧图像
         return parallax_sum / parallax_num >= MIN_PARALLAX;
     }
 }
@@ -117,14 +147,24 @@ void FeatureManager::debugShow()
     }
 }
 
+
+/**
+ * 函数功能：找出最新的两帧之间共视特征点的对应points有哪些
+ * 传入的参数frame_count_l 为frame_count-1
+ * frame_count_r为frame_count
+*/
 vector<pair<Vector3d, Vector3d>> FeatureManager::getCorresponding(int frame_count_l, int frame_count_r)
 {
+    // 存储3d点对的容器列表
     vector<pair<Vector3d, Vector3d>> corres;
+    // 遍历feature list中每一个特征
     for (auto &it : feature)
     {
+        // 判断每个特征点的对应的frame是否在有效范围内
         if (it.start_frame <= frame_count_l && it.endFrame() >= frame_count_r)
         {
             Vector3d a = Vector3d::Zero(), b = Vector3d::Zero();
+            // 计算传入的frame_count_l和frame_count_r距离最开始一帧的距离，也就是最新两帧的index
             int idx_l = frame_count_l - it.start_frame;
             int idx_r = frame_count_r - it.start_frame;
 
@@ -132,6 +172,7 @@ vector<pair<Vector3d, Vector3d>> FeatureManager::getCorresponding(int frame_coun
 
             b = it.feature_per_frame[idx_r].point;
             
+            // corres中存放的就是每一个特征it在两个帧中对应的point点对
             corres.push_back(make_pair(a, b));
         }
     }
@@ -352,10 +393,15 @@ void FeatureManager::removeFront(int frame_count)
     }
 }
 
+/**
+ * it_per_id    从特征点list上取下来的一个feature
+ * frame_count  当前滑动窗口中的frame个数
+*/
 double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int frame_count)
 {
     //check the second last frame is keyframe or not
     //parallax betwwen seconde last frame and third last frame
+    // 计算该特征点在倒数第二帧和倒数第三帧之间的视差
     const FeaturePerFrame &frame_i = it_per_id.feature_per_frame[frame_count - 2 - it_per_id.start_frame];
     const FeaturePerFrame &frame_j = it_per_id.feature_per_frame[frame_count - 1 - it_per_id.start_frame];
 
@@ -372,6 +418,7 @@ double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int f
     //int r_j = frame_count - 1;
     //p_i_comp = ric[camera_id_j].transpose() * Rs[r_j].transpose() * Rs[r_i] * ric[camera_id_i] * p_i;
     p_i_comp = p_i;
+    // p_i中存放的是该point的x,y,z的坐标值，p_i(2)就是z，也就是深度值，这里是归一化坐标所以z为1
     double dep_i = p_i(2);
     double u_i = p_i(0) / dep_i;
     double v_i = p_i(1) / dep_i;
@@ -381,7 +428,7 @@ double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int f
     double u_i_comp = p_i_comp(0) / dep_i_comp;
     double v_i_comp = p_i_comp(1) / dep_i_comp;
     double du_comp = u_i_comp - u_j, dv_comp = v_i_comp - v_j;
-
+    // 视差距离计算。难道这里min中的两个平方距离的计算值不一样吗？？？
     ans = max(ans, sqrt(min(du * du + dv * dv, du_comp * du_comp + dv_comp * dv_comp)));
 
     return ans;

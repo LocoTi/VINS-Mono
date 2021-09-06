@@ -117,6 +117,8 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
 
         int j = frame_count;         
         /**
+         * 当前时刻 PVQ 的中值法离散形式，从第 i 个 IMU 时刻到第 i+1 个 IMU 时刻的积分过程
+         * 
          * 4.更新Rs、Ps、Vs三个向量数组。
          * Rs为旋转向量数组，Ps为位置向量数组，Vs为速度向量数组，数组的大小为WINDOW_SIZE + 1
          * 那么，这三个向量数组中每个元素都对应的是每一个window
@@ -141,10 +143,18 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
     gyr_0 = angular_velocity;
 }
 
+/**
+ * 一共做了下面四件事情：
+ * 1）视差检测。
+ * 2）外参初始化。
+ * 3）线性初始化。
+ * 4）非线性初始化。
+ */
 void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const std_msgs::Header &header)
 {
     ROS_DEBUG("new image coming ------------------------------------------");
     ROS_DEBUG("Adding feature points %lu", image.size());
+    // 1 视差检测
     if (f_manager.addFeatureCheckParallax(frame_count, image, td))
         marginalization_flag = MARGIN_OLD;
     else
@@ -161,19 +171,31 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     all_image_frame.insert(make_pair(header.stamp.toSec(), imageframe));
     tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
 
+    /**
+     * 2 外参初始化
+     * VINS外参标定指的是对相机坐标系到IMU坐标系的变换矩阵进行在线标定与优化。
+     * https://blog.csdn.net/moyu123456789/article/details/102998854
+    */
     if(ESTIMATE_EXTRINSIC == 2)
     {
+        // 标定外参，先进行初步估计初始化，后续优化的时候再进一步进行优化
         ROS_INFO("calibrating extrinsic param, rotation movement is needed");
         if (frame_count != 0)
         {
+            // 第一步，获取最新两帧之间匹配的特征点对
             vector<pair<Vector3d, Vector3d>> corres = f_manager.getCorresponding(frame_count - 1, frame_count);
             Matrix3d calib_ric;
+            // 第二步，计算相机-IMU之间的旋转。
+            // 标定外参旋转矩阵
+            // pre_integrations[frame_count]->delta_q是使用imu预积分获取的旋转矩阵,calib_ric为要计算的相机到IMU的旋转
             if (initial_ex_rotation.CalibrationExRotation(corres, pre_integrations[frame_count]->delta_q, calib_ric))
             {
                 ROS_WARN("initial extrinsic rotation calib success");
                 ROS_WARN_STREAM("initial extrinsic rotation: " << endl << calib_ric);
+                // 有几个相机，就有几个ric，目前单目情况下，ric内只有一个值
                 ric[0] = calib_ric;
                 RIC[0] = calib_ric;
+                // 如果校准成功就设置flag为1
                 ESTIMATE_EXTRINSIC = 1;
             }
         }
@@ -1151,19 +1173,27 @@ void Estimator::slideWindowOld()
 
 void Estimator::setReloFrame(double _frame_stamp, int _frame_index, vector<Vector3d> &_match_points, Vector3d _relo_t, Matrix3d _relo_r)
 {
+    // 记录重定位帧的时间戳
     relo_frame_stamp = _frame_stamp;
+    // 记录重定位帧的index
     relo_frame_index = _frame_index;
+    // 匹配点
     match_points.clear();
     match_points = _match_points;
+    // 平移向量和旋转矩阵记录
     prev_relo_t = _relo_t;
     prev_relo_r = _relo_r;
+    // 遍历滑动窗口，将当前传入的重定位帧的时间戳和滑动窗口中的进行对比
     for(int i = 0; i < WINDOW_SIZE; i++)
     {
+        // 时间戳进行比较
         if(relo_frame_stamp == Headers[i].stamp.toSec())
         {
             relo_frame_local_index = i;
             relocalization_info = 1;
+            // SIZE_POSE值为7，para_Pose为11*7的二维数组
             for (int j = 0; j < SIZE_POSE; j++)
+                // 把两个匹配的帧的位置和旋转四元数存储起来
                 relo_Pose[j] = para_Pose[i][j];
         }
     }

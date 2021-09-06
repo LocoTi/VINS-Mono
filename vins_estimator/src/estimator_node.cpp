@@ -327,10 +327,13 @@ void process()
                     u_v_id.z() = relo_msg->points[i].z;
                     match_points.push_back(u_v_id);
                 }
+                // 获取平移向量
                 Vector3d relo_t(relo_msg->channels[0].values[0], relo_msg->channels[0].values[1], relo_msg->channels[0].values[2]);
+                // 获取旋转矩阵
                 Quaterniond relo_q(relo_msg->channels[0].values[3], relo_msg->channels[0].values[4], relo_msg->channels[0].values[5], relo_msg->channels[0].values[6]);
                 Matrix3d relo_r = relo_q.toRotationMatrix();
                 int frame_index;
+                // 该relos中匹配的特征点所在的帧id
                 frame_index = relo_msg->channels[0].values[7];
                 // 设置重定位帧
                 estimator.setReloFrame(frame_stamp, frame_index, match_points, relo_t, relo_r);
@@ -338,6 +341,13 @@ void process()
 
             ROS_DEBUG("processing vision data with stamp %f \n", img_msg->header.stamp.toSec());
 
+            /**
+             * vins_estimator中收到的是包含了检测出的图像特征点的message，然后从这个message中解析出每个特征点的属性：
+             * 也就是特征点id、camera_id（哪个camera拍的）、该特征点在三维世界中的x,y,z坐标值、
+             * 该特征点在二维图像帧中的像素坐标值u,v、该特征点在像素坐标上x,y方向上的速度。
+             * 将这些属性组织起来按照特征点的id值为index存放在map类型的image变量中，
+             * 然后调用processImage的时候将image作为参数传入
+             */
             TicToc t_s;
             map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> image;
             // 遍历img_msg中的特征点
