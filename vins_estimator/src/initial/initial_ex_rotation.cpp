@@ -9,7 +9,7 @@ InitialEXRotation::InitialEXRotation(){
 }
 
 /**
- * 标定相机和IMU之间的外参旋转矩阵
+ * 标定相机和IMU之间的外参旋转矩阵 手眼标定AX=XB
  * delta_q_imu是IMU预积分得到的旋转矩阵，会和视觉跟踪求解fundamentalMatrix分解后获得的旋转矩阵构建约束方程，从而标定出外参旋转矩阵
  */
 bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> corres, Quaterniond delta_q_imu, Matrix3d &calib_ric_result)
@@ -81,6 +81,9 @@ bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> c
         return false;
 }
 
+/**
+ * 通过计算匹配特征点之间的本质矩阵再分解得到旋转矩阵
+*/
 Matrix3d InitialEXRotation::solveRelativeR(const vector<pair<Vector3d, Vector3d>> &corres)
 {
     if (corres.size() >= 9)
@@ -100,11 +103,13 @@ Matrix3d InitialEXRotation::solveRelativeR(const vector<pair<Vector3d, Vector3d>
             E = -E;
             decomposeE(E, R1, R2, t1, t2);
         }
+        // 找到适当的R、t
         double ratio1 = max(testTriangulation(ll, rr, R1, t1), testTriangulation(ll, rr, R1, t2));
         double ratio2 = max(testTriangulation(ll, rr, R2, t1), testTriangulation(ll, rr, R2, t2));
         cv::Mat_<double> ans_R_cv = ratio1 > ratio2 ? R1 : R2;
 
         Matrix3d ans_R_eigen;
+        // 将ans_R_eigen进行了转置操作，得到的ans_R_eigen就是要计算的旋转矩阵
         for (int i = 0; i < 3; i++)
             for (int j = 0; j < 3; j++)
                 ans_R_eigen(j, i) = ans_R_cv(i, j);

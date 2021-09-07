@@ -189,7 +189,9 @@ namespace cv {
     }
 }
 
-
+/**
+ * 根据提供的特征点对计算旋转矩阵和平移向量
+*/
 bool MotionEstimator::solveRelativeRT(const vector<pair<Vector3d, Vector3d>> &corres, Matrix3d &Rotation, Vector3d &Translation)
 {
     if (corres.size() >= 15)
@@ -201,12 +203,41 @@ bool MotionEstimator::solveRelativeRT(const vector<pair<Vector3d, Vector3d>> &co
             rr.push_back(cv::Point2f(corres[i].second(0), corres[i].second(1)));
         }
         cv::Mat mask;
+        /**
+         * 求得本质矩阵
+         * Mat cv::findFundamentalMat(
+         * InputArray  	points1, //第一幅图像中的特征点数组
+         * InputArray  	points2, //第二幅图像中的特征点数组
+         * int  	method = FM_RANSAC, //计算fundamental matrix的方法，这里使用了cv::FM_RANSAC，说明使用了8点法进行求解的
+         *                              CV_FM_7POINT for a 7-point algorithm. N=7
+         *                              CV_FM_8POINT for an 8-point algorithm. N≥8
+         *                              CV_FM_RANSAC for the RANSAC algorithm. N≥8
+         *                              CV_FM_LMEDS for the LMedS algorithm. N≥8
+         * double  	ransacReprojThreshold = 3., //点到对极线的最大距离，超过这个值的点将被舍弃
+         * double  	confidence = 0.99, //矩阵正确的可信度
+         * OutputArray  	mask = noArray() //输出在计算过程中没有被舍弃的点
+         * )
+         * 该函数对应链接：https://docs.opencv.org/3.4/d9/d0c/group__calib3d.html#gae420abc34eaa03d0c6a67359609d8429
+        */
         cv::Mat E = cv::findFundamentalMat(ll, rr, cv::FM_RANSAC, 0.3 / 460, 0.99, mask);
+        // cameraMatrix初始化为单位矩阵
         cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3) << 1, 0, 0, 0, 1, 0, 0, 0, 1);
         cv::Mat rot, trans;
+        //由本质矩阵恢复出位姿
+        /**
+         * int cv::recoverPose 	( 	InputArray  	E,  //本质矩阵
+         * InputArray  	points1,   //第一幅图像点的数组
+         * InputArray  	points2,   //第二幅图像点的数组
+         * InputArray  	cameraMatrix,  //相机内参
+         * OutputArray  	R,     //第一帧坐标系到第二帧坐标系的旋转矩阵
+         * OutputArray  	t,     //第一帧坐标系到第二帧坐标系的平移向量
+         * InputOutputArray  	mask = noArray()   //在findFundamentalMat()中没有被舍弃的点
+         * ) 	
+        */
         int inlier_cnt = cv::recoverPose(E, ll, rr, cameraMatrix, rot, trans, mask);
         //cout << "inlier_cnt " << inlier_cnt << endl;
 
+        // 得到旋转平移
         Eigen::Matrix3d R;
         Eigen::Vector3d T;
         for (int i = 0; i < 3; i++)
@@ -218,6 +249,7 @@ bool MotionEstimator::solveRelativeRT(const vector<pair<Vector3d, Vector3d>> &co
 
         Rotation = R.transpose();
         Translation = -R.transpose() * T;
+        // 内点数必须大于12
         if(inlier_cnt > 12)
             return true;
         else
