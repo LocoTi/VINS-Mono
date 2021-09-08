@@ -357,12 +357,13 @@ bool Estimator::initialStructure()
         return false;
     }
     GlobalSFM sfm;
-    // 1.4.三角化特征点，对滑窗每一帧求解sfm问题
+    // 1.4.三角化特征点，对滑窗每一帧求解sfm问题，得到所有图像帧相对于参考帧的旋转四元数Q、平移向量T和特征点坐标sfm_tracked_points。
     if(!sfm.construct(frame_count + 1, Q, T, l,
               relative_R, relative_T,
               sfm_f, sfm_tracked_points))
     {
         ROS_DEBUG("global SFM failed!");
+        // 求解失败则边缘化最早一帧并滑动窗口
         marginalization_flag = MARGIN_OLD;
         return false;
     }
@@ -472,11 +473,19 @@ bool Estimator::initialStructure()
 
 }
 
+/**
+ * 相机-IMU对齐指的是将视觉SFM结构和IMU的预积分结果进行对齐，
+ * 主要分为
+ * 1）陀螺仪偏差的标定；
+ * 2）速度、重力向量和尺度初始化；
+ * 3）对重力进行修正三部分。
+ */
 bool Estimator::visualInitialAlign()
 {
     TicToc t_g;
     VectorXd x;
     //solve scale
+    // 视觉惯性联合初始化，计算陀螺仪的偏置，尺度，重力加速度和速度
     bool result = VisualIMUAlignment(all_image_frame, Bgs, g, x);
     if(!result)
     {
@@ -485,6 +494,7 @@ bool Estimator::visualInitialAlign()
     }
 
     // change state
+    // 获取滑动窗口内所有图像帧相对于第l帧的位姿信息，并设置为关键帧
     for (int i = 0; i <= frame_count; i++)
     {
         Matrix3d Ri = all_image_frame[Headers[i].stamp.toSec()].R;
@@ -494,6 +504,7 @@ bool Estimator::visualInitialAlign()
         all_image_frame[Headers[i].stamp.toSec()].is_key_frame = true;
     }
 
+    // 获取特征点深度
     VectorXd dep = f_manager.getDepthVector();
     for (int i = 0; i < dep.size(); i++)
         dep[i] = -1;
@@ -503,15 +514,27 @@ bool Estimator::visualInitialAlign()
     Vector3d TIC_TMP[NUM_OF_CAM];
     for(int i = 0; i < NUM_OF_CAM; i++)
         TIC_TMP[i].setZero();
+    // RIC中存放的是相机到IMU的旋转，在相机-IMU外参标定部分求得
     ric[0] = RIC[0];
     f_manager.setRic(ric);
+    // 三角化计算地图点的深度，Ps中存放的是各个帧相对于参考帧之间的平移，RIC[0]为相机-IMU之间的旋转
     f_manager.triangulate(Ps, &(TIC_TMP[0]), &(RIC[0]));
 
     double s = (x.tail<1>())(0);
+    // 这里陀螺仪的偏差Bgs改变了，需遍历滑动窗口中的帧，重新预积分
     for (int i = 0; i <= WINDOW_SIZE; i++)
     {
         pre_integrations[i]->repropagate(Vector3d::Zero(), Bgs[i]);
     }
+    // 计算各帧相对于b0的位姿信息，前边计算的都是相对于第l帧的位姿
+    /**
+     * 前面初始化中，计算出来的是相对滑动窗口中第l帧的位姿，在这里转换到第b0帧坐标系下
+     * s*p_bk^​b0​​=s*p_bk^​cl​​−s*p_b0^​cl​​=(s*p_ck^​cl​​−R_bk​^cl​​*p_c^b​)−(s*p_c0^​cl​​−R_b0​^cl​​*p_c^b​)
+     * TIC[0]是相机到IMU的平移量
+     * Rs是IMU第k帧到滑动窗口中图像第l帧的旋转
+     * Ps是滑动窗口中第k帧到第l帧的平移量
+     * 注意：如果运行的脚本是配置文件中无外参的脚本，那么这里的TIC都是0
+    */
     for (int i = frame_count; i >= 0; i--)
         Ps[i] = s * Ps[i] - Rs[i] * TIC[0] - (s * Ps[0] - Rs[0] * TIC[0]);
     int kv = -1;
@@ -521,9 +544,11 @@ bool Estimator::visualInitialAlign()
         if(frame_i->second.is_key_frame)
         {
             kv++;
+            // 存储速度
             Vs[kv] = frame_i->second.R * x.segment<3>(kv * 3);
         }
     }
+    // 更新每个地图点被观测到的帧数(used_num)和预测的深度(estimated_depth)
     for (auto &it_per_id : f_manager.feature)
     {
         it_per_id.used_num = it_per_id.feature_per_frame.size();
@@ -532,12 +557,17 @@ bool Estimator::visualInitialAlign()
         it_per_id.estimated_depth *= s;
     }
 
+    /**
+     * refine之后就获得了C_0坐标系下的重力g^{c_0}，此时通过将g^{c_0}旋转至z轴方向，
+     * 这样就可以计算相机系到世界坐标系的旋转矩阵q_{c_0}^w，这里求得的是rot_diff,这样就可以将所有变量调整至世界系中。
+    */
     Matrix3d R0 = Utility::g2R(g);
     double yaw = Utility::R2ypr(R0 * Rs[0]).x();
     R0 = Utility::ypr2R(Eigen::Vector3d{-yaw, 0, 0}) * R0;
     g = R0 * g;
     //Matrix3d rot_diff = R0 * Rs[0].transpose();
     Matrix3d rot_diff = R0;
+    // 所有变量从参考坐标系c_0旋转到世界坐标系w
     for (int i = 0; i <= frame_count; i++)
     {
         Ps[i] = rot_diff * Ps[i];
