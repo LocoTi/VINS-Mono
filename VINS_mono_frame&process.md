@@ -332,3 +332,28 @@ midPointIntegration 更新IMU约束的误差项、协方差、Jacobian
 更新IMU约束的协方差、Jacobian
 
 ![image-20210830082125945](%E5%9B%BE%E8%A1%A8%E5%BA%93/image-20210830082125945.png)
+
+
+
+### Estimator::processImage
+
+#### 1）视差检测。 addFeatureCheckParallax
+
+
+
+#### 2）外参初始化。 CalibrationExRotation
+
+
+
+#### 3）线性初始化。 initialStructure
+
+
+$$
+s*p_{bk}^{b0}=s*p_{bk}^{cl}−s*p_{b0}^{cl}=(s*p_{ck}^{cl}−R_{bk}^{cl}*p_c^b)−(s*p_{c0}^{cl}−R_{b0}^{cl}*p_c^b)
+$$
+
+
+#### 4）非线性初始化。
+
+
+

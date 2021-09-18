@@ -212,6 +212,19 @@ class IntegrationBase
      
     }
 
+    /**
+     * 定义IMU的残差约束
+     * const Eigen::Vector3d &Pi, //第i帧位置
+     * const Eigen::Quaterniond &Qi, //第i帧姿态
+     * const Eigen::Vector3d &Vi, //第i帧速度
+     * const Eigen::Vector3d &Bai, //第i帧加速度偏差
+     * const Eigen::Vector3d &Bgi, //第i帧角速度偏差
+     * const Eigen::Vector3d &Pj, //第j帧位置
+     * const Eigen::Quaterniond &Qj, //第j帧姿态
+     * const Eigen::Vector3d &Vj, //第j帧速度
+     * const Eigen::Vector3d &Baj, //第j帧加速度偏差
+     * const Eigen::Vector3d &Bgj//第j帧角速度偏差
+    */
     Eigen::Matrix<double, 15, 1> evaluate(const Eigen::Vector3d &Pi, const Eigen::Quaterniond &Qi, const Eigen::Vector3d &Vi, const Eigen::Vector3d &Bai, const Eigen::Vector3d &Bgi,
                                           const Eigen::Vector3d &Pj, const Eigen::Quaterniond &Qj, const Eigen::Vector3d &Vj, const Eigen::Vector3d &Baj, const Eigen::Vector3d &Bgj)
     {
@@ -232,10 +245,19 @@ class IntegrationBase
         Eigen::Vector3d corrected_delta_v = delta_v + dv_dba * dba + dv_dbg * dbg;
         Eigen::Vector3d corrected_delta_p = delta_p + dp_dba * dba + dp_dbg * dbg;
 
+        /**
+         * matrix.block<p,q>(i, j) :<p, q>可理解为一个p行q列的子矩阵，该定义表示从原矩阵中第(i, j)开始，获取一个p行q列的子矩阵，
+         * 返回该子矩阵组成的临时矩阵对象，原矩阵的元素不变
+         * */
+        // 位移残差，对应IMU残差公式中的delta alpha_{b_{k+1}}^{b_k}的计算，其中O_P值为0
         residuals.block<3, 1>(O_P, 0) = Qi.inverse() * (0.5 * G * sum_dt * sum_dt + Pj - Pi - Vi * sum_dt) - corrected_delta_p;
+        // 旋转残差，对应IMU残差公式中的delta theta_{b_{k+1}}^{b_k}的计算，其中O_R值为3
         residuals.block<3, 1>(O_R, 0) = 2 * (corrected_delta_q.inverse() * (Qi.inverse() * Qj)).vec();
+        // 速度残差，对应IMU残差公式中的delta betaO_V值为6
         residuals.block<3, 1>(O_V, 0) = Qi.inverse() * (G * sum_dt + Vj - Vi) - corrected_delta_v;
+        // 加速度计残差，O_BA值为9
         residuals.block<3, 1>(O_BA, 0) = Baj - Bai;
+        // 陀螺仪残差，O_BG值为12
         residuals.block<3, 1>(O_BG, 0) = Bgj - Bgi;
         return residuals;
     }
